@@ -1,284 +1,155 @@
 // =============================================================
-// server.js — Servidor Principal da API da Doceria Doce Encanto
+// server.js — Servidor Principal da API do Haruy Sushi
 // =============================================================
-// Aula 7: Integração com Supabase
+// Aula 6: API Middleware and Error Handling
 //
-// Fluxo de uma Requisição:
+// O que aprendemos nesta aula?
+//   1. O que são Middlewares e para que servem
+//   2. Criar um Middleware de Log (logger.js)
+//   3. Criar um Middleware de Tratamento de Erros (errorHandler.js)
+//   4. Tratar rotas não encontradas (Erro 404)
+//   5. A ORDEM dos middlewares importa muito!
 //
-//  Frontend (browser)
+// Fluxo de uma Requisição (com Middlewares):
+//
+//  App Mobile
 //     │
 //     ▼
-//  [cors()]              ← Libera acesso cross-origin
+//  [cors()]              ← Middleware 1: Libera acesso de outras origens
 //     │
 //     ▼
-//  [express.json()]      ← Parseia o body em JSON
+//  [express.json()]      ← Middleware 2: Transforma o body em JSON
 //     │
 //     ▼
-//  [logger]              ← Loga método, rota e status
+//  [logger]              ← Middleware 3: Anota a requisição no terminal
 //     │
 //     ▼
-//  Rota correta
+//  Rota correta          ← A requisição chega na rota certa
 //  (ex: GET /api/produtos)
 //     │
-//     ▼
-//  [Supabase]            ← Consulta o banco PostgreSQL
-//     │
 //     ▼ (se der erro)
-//  [errorHandler]        ← Captura erros e responde JSON
+//  [errorHandler]        ← Captura qualquer erro das rotas
 //     │
 //     ▼
-//  Resposta ao Frontend
+//  Resposta enviada ao App Mobile
 //
 // =============================================================
 
-require('dotenv').config();
 
-const express    = require('express');
-const cors       = require('cors');
-const { createClient } = require('@supabase/supabase-js');
+// ─── 1. Importações das Dependências ─────────────────────────
+// express: framework web para criar o servidor e as rotas
+const express = require('express');
 
-// ─── Supabase ─────────────────────────────────────────────────
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-);
+// cors: permite que o App Mobile (em outro domínio) acesse nossa API
+// Sem CORS, o navegador bloquearia as requisições por segurança!
+const cors = require('cors');
 
-// ─── App ──────────────────────────────────────────────────────
+
+// ─── 2. Importação dos Middlewares Customizados ───────────────
+// São os arquivos que criamos na pasta /middlewares
+
+// Logger: registra no terminal toda requisição que chega
+const logger = require('./middlewares/logger');
+
+// ErrorHandler: captura qualquer erro não tratado nas rotas
+const errorHandler = require('./middlewares/errorHandler');
+
+
+// ─── 3. Criação da Aplicação Express ─────────────────────────
+// app é o nosso "servidor". É nele que registramos middlewares e rotas.
 const app = express();
 
-// ─── Middlewares globais ───────────────────────────────────────
+
+// ─── 4. Middlewares Globais do Express ────────────────────────
+// app.use() registra um middleware para TODAS as requisições.
+// A ORDEM importa! Eles são executados de cima para baixo.
+
+// Habilita CORS (Cross-Origin Resource Sharing).
+// Sem isso, o browser bloquearia chamadas do App Mobile para nossa API.
 app.use(cors());
+
+// Habilita a leitura de JSON no corpo das requisições (req.body).
+// Sem isso, req.body seria undefined em POST e PUT.
 app.use(express.json());
 
-// Logger simples
-app.use((req, res, next) => {
-    const inicio = Date.now();
-    res.on('finish', () => {
-        console.log(`[${req.method}] ${req.url} → ${res.statusCode} (${Date.now() - inicio}ms)`);
-    });
-    next();
-});
+// =============================================================
+// ── NOVO NA AULA 6: Middleware de Log ─────────────────────────
+// Vem APÓS os middlewares do Express, mas ANTES das rotas.
+// Assim toda requisição passa pelo logger antes de chegar nas rotas.
+// =============================================================
+app.use(logger);
 
-// ─── Rota raiz ────────────────────────────────────────────────
+
+// ─── 5. Rota de Boas-Vindas ───────────────────────────────────
+// Rota raiz — útil para verificar se o servidor está no ar.
+// Acesse: http://localhost:3000
 app.get('/', (req, res) => {
-    res.json({ mensagem: '🍰 Bem-vindo à API da Doceria Doce Encanto!' });
+    res.json({ mensagem: '🍰 Bem-vindo à API da Doceria Doce Encanto !' });
 });
+
+
+// ─── 6. Importação e Registro das Rotas ───────────────────────
+// Importamos os arquivos de rota da pasta /routes
+const rotasCategorias = require('./routes/categorias');
+const rotasProdutos = require('./routes/produtos');
+
+// app.use('prefixo', router) registra o router com um prefixo de URL.
+// Toda rota definida dentro de categorias.js ficará em /api/categorias/...
+// Toda rota definida dentro de produtos.js ficará em /api/produtos/...
+app.use('/api/categorias', rotasCategorias);
+app.use('/api/produtos', rotasProdutos);
 
 
 // =============================================================
-// ROTAS — CATEGORIAS
+// ── NOVO NA AULA 6: Tratamento de Rota não encontrada (404) ──
+// Este middleware DEVE vir DEPOIS de todas as rotas registradas.
+// Se a requisição chegou até aqui, nenhuma rota correspondeu.
+// Isso é o nosso "rota não encontrada" personalizado.
+//
+// Exemplo: GET /api/batata → cai aqui!
 // =============================================================
-
-// GET /api/categorias — lista todas
-app.get('/api/categorias', async (req, res, next) => {
-    try {
-        const { data, error } = await supabase
-            .from('categorias')
-            .select('*')
-            .order('id');
-
-        if (error) throw error;
-
-        res.json(data);
-    } catch (err) {
-        next(err);
-    }
-});
-
-// GET /api/categorias/:id — busca por id
-app.get('/api/categorias/:id', async (req, res, next) => {
-    try {
-        const { data, error } = await supabase
-            .from('categorias')
-            .select('*')
-            .eq('id', req.params.id)
-            .single();
-
-        if (error) return res.status(404).json({ sucesso: false, mensagem: 'Categoria não encontrada.' });
-
-        res.json(data);
-    } catch (err) {
-        next(err);
-    }
-});
-
-// POST /api/categorias — cria nova
-app.post('/api/categorias', async (req, res, next) => {
-    try {
-        const { nome } = req.body;
-
-        if (!nome) {
-            return res.status(400).json({ sucesso: false, mensagem: 'O campo "nome" é obrigatório.' });
-        }
-
-        const { data, error } = await supabase
-            .from('categorias')
-            .insert({ nome })
-            .select()
-            .single();
-
-        if (error) throw error;
-
-        res.status(201).json(data);
-    } catch (err) {
-        next(err);
-    }
-});
-
-
-// =============================================================
-// ROTAS — PRODUTOS
-// =============================================================
-
-// GET /api/produtos — lista todos (com filtro opcional por categoriaId)
-app.get('/api/produtos', async (req, res, next) => {
-    try {
-        const { categoriaId } = req.query;
-
-        let query = supabase
-            .from('produtos')
-            .select('*')
-            .order('id');
-
-        if (categoriaId) {
-            query = query.eq('categoriaId', categoriaId);
-        }
-
-        const { data, error } = await query;
-
-        if (error) throw error;
-
-        res.json(data);
-    } catch (err) {
-        next(err);
-    }
-});
-
-// GET /api/produtos/:id — busca por id
-app.get('/api/produtos/:id', async (req, res, next) => {
-    try {
-        const { data, error } = await supabase
-            .from('produtos')
-            .select('*')
-            .eq('id', req.params.id)
-            .single();
-
-        if (error) return res.status(404).json({ sucesso: false, mensagem: 'Produto não encontrado.' });
-
-        res.json(data);
-    } catch (err) {
-        next(err);
-    }
-});
-
-// POST /api/produtos — cria novo
-app.post('/api/produtos', async (req, res, next) => {
-    try {
-        const { nome, preco, categoriaId, descricao, imagem } = req.body;
-
-        if (!nome || preco == null || !categoriaId) {
-            return res.status(400).json({ sucesso: false, mensagem: 'Os campos "nome", "preco" e "categoriaId" são obrigatórios.' });
-        }
-
-        const { data, error } = await supabase
-            .from('produtos')
-            .insert({ nome, preco, categoriaId, descricao, imagem })
-            .select()
-            .single();
-
-        if (error) throw error;
-
-        res.status(201).json(data);
-    } catch (err) {
-        next(err);
-    }
-});
-
-// PUT /api/produtos/:id — atualiza
-app.put('/api/produtos/:id', async (req, res, next) => {
-    try {
-        const { nome, preco, categoriaId, descricao, imagem } = req.body;
-
-        const { data, error } = await supabase
-            .from('produtos')
-            .update({ nome, preco, categoriaId, descricao, imagem })
-            .eq('id', req.params.id)
-            .select()
-            .single();
-
-        if (error) return res.status(404).json({ sucesso: false, mensagem: 'Produto não encontrado.' });
-
-        res.json(data);
-    } catch (err) {
-        next(err);
-    }
-});
-
-// DELETE /api/produtos/:id — remove
-app.delete('/api/produtos/:id', async (req, res, next) => {
-    try {
-        const { data, error } = await supabase
-            .from('produtos')
-            .delete()
-            .eq('id', req.params.id)
-            .select()
-            .single();
-
-        if (error) return res.status(404).json({ sucesso: false, mensagem: 'Produto não encontrado.' });
-
-        res.json({ sucesso: true, mensagem: 'Produto removido.', produto: data });
-    } catch (err) {
-        next(err);
-    }
-});
-
-
-// =============================================================
-// 404 — Rota não encontrada
-// =============================================================
-app.use((req, res) => {
+app.use((req, res, next) => {
     res.status(404).json({
         sucesso: false,
-        mensagem: `Rota '${req.url}' não encontrada na API da Doceria Doce Encanto.`
-    });
-});
-
-// =============================================================
-// Error Handler global
-// =============================================================
-app.use((err, req, res, next) => {
-    console.error('💥 Erro:', err.message);
-    res.status(500).json({
-        sucesso: false,
-        mensagem: 'Erro interno do servidor.',
-        detalhe: err.message
+        mensagem: `Rota '${req.url}' não encontrada na API do Haruy Sushi.`
     });
 });
 
 
 // =============================================================
-// Iniciar servidor
+// ── NOVO NA AULA 6: Middleware de Erros Global ────────────────
+// ⚠️ DEVE SER SEMPRE O ÚLTIMO middleware registrado!
+// Ele só "acorda" quando uma rota chama next(err) ou joga throw new Error().
+// Como tem 4 parâmetros (err, req, res, next), o Express sabe que é
+// um middleware de erro e chama automaticamente em caso de problema.
 // =============================================================
-const PORTA = process.env.PORT || 3000;
+app.use(errorHandler);
 
+
+// ─── 7. Iniciando o Servidor ──────────────────────────────────
+// Definimos a porta como constante para facilitar a mudança depois.
+const PORTA = process.env.PORT || 3001;
+
+// app.listen() inicia o servidor na porta definida.
+// O callback (função passada como parâmetro) é executado
+// assim que o servidor está pronto para receber requisições.
 app.listen(PORTA, () => {
     console.log('');
-    console.log('🍰 ================================');
-    console.log(`🍰 Servidor rodando!`);
-    console.log(`🍰 Acesse: http://localhost:${PORTA}`);
-    console.log('🍰 ================================');
+    console.log(' ================================');
+    console.log(` 🧁 Servidor Doceria Doce Encanto rodando!`);
+    console.log(` Acesse: http://localhost:${PORTA}`);
+    console.log(' ================================');
     console.log('');
     console.log('📋 Rotas disponíveis:');
-    console.log(`   GET    /api/categorias`);
-    console.log(`   GET    /api/categorias/:id`);
-    console.log(`   POST   /api/categorias`);
-    console.log(`   GET    /api/produtos`);
-    console.log(`   GET    /api/produtos?categoriaId=N`);
-    console.log(`   GET    /api/produtos/:id`);
-    console.log(`   POST   /api/produtos`);
-    console.log(`   PUT    /api/produtos/:id`);
-    console.log(`   DELETE /api/produtos/:id`);
+    console.log(`   GET    http://localhost:${PORTA}/api/categorias`);
+    console.log(`   POST   http://localhost:${PORTA}/api/categorias`);
+    console.log(`   GET    http://localhost:${PORTA}/api/produtos`);
+    console.log(`   GET    http://localhost:${PORTA}/api/produtos/:id`);
+    console.log(`   POST   http://localhost:${PORTA}/api/produtos`);
+    console.log(`   PUT    http://localhost:${PORTA}/api/produtos/:id`);
+    console.log(`   DELETE http://localhost:${PORTA}/api/produtos/:id`);
+    console.log('');
+    console.log('💣 Rota de teste de erro:');
+    console.log(`   GET    http://localhost:${PORTA}/api/produtos/erro-teste`);
     console.log('');
 });
-
-module.exports = app;
